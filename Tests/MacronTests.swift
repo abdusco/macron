@@ -12,6 +12,20 @@ struct Tests {
         let paths = Paths(home: home)
         try paths.prepare()
 
+        var missingJobError: Error?
+        do { _ = try execute(name: "announce_time", paths: paths) }
+        catch { missingJobError = error }
+        try check(missingJobError is MacronError, "Missing job produces a friendly error")
+        try check(String(describing: missingJobError!) == "Unknown job: 'announce_time'. Check 'macron list'; run 'macron reload' if you recently added or enabled it.",
+                  "Missing job message names the job and explains how to resolve it")
+        try check(!FileManager.default.fileExists(atPath: paths.result("announce_time").path), "Missing job does not record a run")
+
+        try Data("{".utf8).write(to: paths.job("corrupt"))
+        var corruptJobError: Error?
+        do { _ = try execute(name: "corrupt", paths: paths) }
+        catch { corruptJobError = error }
+        try check(corruptJobError is DecodingError, "Corrupt job is not misreported as unknown")
+
         let cases: [(String, [[String: Int]])] = [
             ("* * * * *", [[:]]),
             ("0 9 * * *", [["Minute": 0, "Hour": 9]]),
@@ -85,7 +99,18 @@ struct Tests {
         let failure = try JSONDecoder().decode(RunResult.self, from: Data(contentsOf: paths.result("missing")))
         try check(failure.error != nil && failure.finishedAt != nil, "Start failure recorded")
 
+        let log = try String(contentsOf: home.appendingPathComponent("Library/Logs/macron.log"), encoding: .utf8)
+        for expected in ["[success] notice: run=", "stdout hello", "stderr warning", "finished exit=0",
+                         "[failure] error: run=", "finished exit=7", "failed to start:", "Skipped:"] {
+            try check(log.contains(expected), "Log contains \(expected)")
+        }
+        let lines = log.split(separator: "\n")
+        try check(lines.filter { $0.contains("stdout out ") }.count == 2000, "All stdout lines logged")
+        try check(lines.filter { $0.contains("stderr err ") }.count == 2000, "All stderr lines logged")
+        try check(lines.allSatisfy { $0.contains("] ") }, "Concurrent writes preserve complete lines")
+
         let plist = try agent(for: first.jobs[0], paths: paths)
+        try check(plist["Label"] as? String == "dev.abdus.apps.macron.job.one", "Agent identifier")
         try check(plist["StartCalendarInterval"] as? [[String: Int]] == [["Minute": 0, "Hour": 9]], "Calendar agent")
         try check(plist["StartInterval"] == nil && plist["RunAtLoad"] == nil, "No interval timer or unsolicited run")
         print("All tests passed.")

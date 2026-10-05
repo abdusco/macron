@@ -12,9 +12,9 @@ struct RunResult: Codable {
 // Each stream is read on its own thread so neither pipe can block the child.
 final class OutputReader: @unchecked Sendable {
     let handle: FileHandle
-    let logger: Logger
+    let logger: MacronLogger
     let prefix: String
-    init(handle: FileHandle, logger: Logger, prefix: String) {
+    init(handle: FileHandle, logger: MacronLogger, prefix: String) {
         self.handle = handle
         self.logger = logger
         self.prefix = prefix
@@ -40,7 +40,7 @@ final class OutputReader: @unchecked Sendable {
     }
     private func emit(_ data: Data) {
         let text = String(decoding: data, as: UTF8.self)
-        logger.log("\(self.prefix, privacy: .public) \(text, privacy: .public)")
+        logger.log("\(prefix) \(text)")
     }
 }
 
@@ -49,19 +49,24 @@ func execute(name: String, paths: Paths) throws -> Int32 {
         throw MacronError("Invalid job name")
     }
     try paths.prepare()
+    let logger = MacronLogger(category: name, home: paths.home)
     let lock: FileLock
     do { lock = try FileLock(paths.locks.appendingPathComponent("\(name).lock")) }
     catch is LockBusy {
-        serviceLog.notice("Skipped \(name, privacy: .public): already running or being updated")
+        logger.notice("Skipped: already running or being updated")
         return 0
     }
     defer { withExtendedLifetime(lock) {} }
-    let job = try JSONDecoder().decode(Job.self, from: Data(contentsOf: paths.job(name)))
-    let logger = Logger(subsystem: "local.macron", category: name)
+    let data: Data
+    do { data = try Data(contentsOf: paths.job(name)) }
+    catch let error as CocoaError where error.code == .fileReadNoSuchFile || error.code == .fileNoSuchFile {
+        throw MacronError("Unknown job: '\(name)'. Check 'macron list'; run 'macron reload' if you recently added or enabled it.")
+    }
+    let job = try JSONDecoder().decode(Job.self, from: data)
     let runID = UUID().uuidString
     var result = RunResult(runID: runID, startedAt: Date())
     try writeJSON(result, to: paths.result(name))
-    logger.notice("run=\(runID, privacy: .public) started")
+    logger.notice("run=\(runID) started")
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/bin/zsh")
     process.arguments = ["-c", job.command]
@@ -79,7 +84,7 @@ func execute(name: String, paths: Paths) throws -> Int32 {
         result.finishedAt = Date()
         result.error = String(describing: error)
         try writeJSON(result, to: paths.result(name))
-        logger.error("run=\(runID, privacy: .public) failed to start: \(String(describing: error), privacy: .public)")
+        logger.error("run=\(runID) failed to start: \(error)")
         throw error
     }
     try stdout.fileHandleForWriting.close()
@@ -97,9 +102,9 @@ func execute(name: String, paths: Paths) throws -> Int32 {
     try writeJSON(result, to: paths.result(name))
     let duration = result.finishedAt!.timeIntervalSince(result.startedAt)
     if result.exitCode == 0 {
-        logger.notice("run=\(runID, privacy: .public) finished exit=0 duration=\(duration)s")
+        logger.notice("run=\(runID) finished exit=0 duration=\(duration)s")
     } else {
-        logger.error("run=\(runID, privacy: .public) finished exit=\(result.exitCode!) duration=\(duration)s")
+        logger.error("run=\(runID) finished exit=\(result.exitCode!) duration=\(duration)s")
     }
     return result.exitCode!
 }

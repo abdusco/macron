@@ -2,7 +2,8 @@ import Darwin
 import Foundation
 import OSLog
 
-let serviceLog = Logger(subsystem: "local.macron", category: "service")
+let appIdentifier = "dev.abdus.apps.macron"
+let serviceLog = MacronLogger(category: "service")
 
 struct Paths {
     let home: URL
@@ -14,7 +15,7 @@ struct Paths {
     var locks: URL { root.appendingPathComponent("locks") }
     var agents: URL { home.appendingPathComponent("Library/LaunchAgents") }
     var domain: String { "gui/\(getuid())" }
-    func label(_ name: String) -> String { "local.macron.job.\(name)" }
+    func label(_ name: String) -> String { "\(appIdentifier).job.\(name)" }
     func plist(_ name: String) -> URL { agents.appendingPathComponent("\(label(name)).plist") }
     func job(_ name: String) -> URL { jobs.appendingPathComponent("\(name).json") }
     func result(_ name: String) -> URL { results.appendingPathComponent("\(name).json") }
@@ -85,11 +86,19 @@ func reconcile(_ configuration: Configuration, paths: Paths) throws {
     var existing = [String: Job]()
     for file in files { existing[file.deletingPathExtension().lastPathComponent] = try JSONDecoder().decode(Job.self, from: Data(contentsOf: file)) }
     let desired = Dictionary(uniqueKeysWithValues: configuration.jobs.filter(\.isEnabled).map { ($0.name, $0) })
-    let changes = Set(existing.keys).union(desired.keys).filter { existing[$0] != desired[$0] }
+    let legacyAgents = try FileManager.default.contentsOfDirectory(at: paths.agents, includingPropertiesForKeys: nil)
+        .filter { $0.lastPathComponent.hasPrefix("local.macron.job.") && $0.pathExtension == "plist" }
+    let legacyNames = Set(legacyAgents.map { String($0.deletingPathExtension().lastPathComponent.dropFirst("local.macron.job.".count)) })
+    let changes = Set(existing.keys).union(desired.keys).union(legacyNames)
+        .filter { existing[$0] != desired[$0] || legacyNames.contains($0) }
     // Hold all affected job locks before altering any agents. Reload can be retried after active runs finish.
     let jobLocks = try changes.sorted().map { try FileLock(paths.locks.appendingPathComponent("\($0).lock")) }
     defer { withExtendedLifetime(jobLocks) {} }
     for name in changes.sorted() {
+        if legacyNames.contains(name) {
+            try launchctl(["bootout", "\(paths.domain)/local.macron.job.\(name)"], allowFailure: true)
+            try FileManager.default.removeItem(at: paths.agents.appendingPathComponent("local.macron.job.\(name).plist"))
+        }
         try launchctl(["bootout", "\(paths.domain)/\(paths.label(name))"], allowFailure: true)
         if let job = desired[name] {
             try writePlist(agent(for: job, paths: paths), to: paths.plist(name))
@@ -102,10 +111,12 @@ func reconcile(_ configuration: Configuration, paths: Paths) throws {
                 throw error
             }
         } else {
-            try FileManager.default.removeItem(at: paths.job(name))
+            if FileManager.default.fileExists(atPath: paths.job(name).path) {
+                try FileManager.default.removeItem(at: paths.job(name))
+            }
             try? FileManager.default.removeItem(at: paths.plist(name))
         }
-        serviceLog.notice("Applied job \(name, privacy: .public)")
+        MacronLogger(category: "service", home: paths.home).notice("Applied job \(name)")
     }
     // Restore unloaded jobs, even when their stored configuration is unchanged.
     for job in desired.values where !changes.contains(job.name) {
@@ -140,7 +151,7 @@ func reload(paths: Paths) throws {
     try paths.prepare()
     try removeLegacyWatcher(paths: paths)
     try reconcile(configuration, paths: paths)
-    serviceLog.notice("Configuration reloaded")
+    MacronLogger(category: "service", home: paths.home).notice("Configuration reloaded")
     print("Configuration reloaded.")
 }
 
@@ -158,6 +169,7 @@ func install(paths: Paths) throws {
     }
     try removeLegacyWatcher(paths: paths)
     try reconcile(configuration, paths: paths)
+    MacronLogger(category: "service", home: paths.home).notice("Installed")
     print("Installed. Edit \(paths.config.path), then run macron reload.")
 }
 
@@ -166,18 +178,23 @@ func uninstall(paths: Paths) throws {
     let configurationLock = try FileLock(paths.locks.appendingPathComponent("configuration.lock"))
     defer { withExtendedLifetime(configurationLock) {} }
     let agents = try FileManager.default.contentsOfDirectory(at: paths.agents, includingPropertiesForKeys: nil)
-        .filter { $0.lastPathComponent.hasPrefix("local.macron.job.") && $0.pathExtension == "plist" }
-    let names = agents.map { String($0.deletingPathExtension().lastPathComponent.dropFirst("local.macron.job.".count)) }
-    let locks = try names.sorted().map { try FileLock(paths.locks.appendingPathComponent("\($0).lock")) }
+        .filter { ($0.lastPathComponent.hasPrefix("\(appIdentifier).job.") || $0.lastPathComponent.hasPrefix("local.macron.job.")) && $0.pathExtension == "plist" }
+    let names = agents.map { url in
+        let label = url.deletingPathExtension().lastPathComponent
+        let prefix = label.hasPrefix("local.macron.job.") ? "local.macron.job." : "\(appIdentifier).job."
+        return String(label.dropFirst(prefix.count))
+    }
+    let locks = try Set(names).sorted().map { try FileLock(paths.locks.appendingPathComponent("\($0).lock")) }
     defer { withExtendedLifetime(locks) {} }
     try removeLegacyWatcher(paths: paths)
-    for name in names {
-        try launchctl(["bootout", "\(paths.domain)/\(paths.label(name))"], allowFailure: true)
-        try FileManager.default.removeItem(at: paths.plist(name))
+    for (url, name) in zip(agents, names) {
+        try launchctl(["bootout", "\(paths.domain)/\(url.deletingPathExtension().lastPathComponent)"], allowFailure: true)
+        try FileManager.default.removeItem(at: url)
         try? FileManager.default.removeItem(at: paths.job(name))
     }
     for url in [paths.binary] {
         if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
     }
+    MacronLogger(category: "service", home: paths.home).notice("Uninstalled")
     print("Uninstalled. Configuration and latest run results retained.")
 }

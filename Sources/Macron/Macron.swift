@@ -6,7 +6,7 @@ struct Macron {
     static func main() {
         do { try run() }
         catch {
-            serviceLog.error("\(String(describing: error), privacy: .public)")
+            serviceLog.error(String(describing: error))
             FileHandle.standardError.write(Data("macron: \(error)\n".utf8))
             exit(1)
         }
@@ -68,7 +68,8 @@ struct Macron {
             run <job>            Run an applied job now; return its exit code
             status <job>         Show the latest run and launchd status
             version              Show the build version
-            Logs: Console → search subsystem:local.macron
+            Logs: Console → search subsystem:\(appIdentifier)
+                  Console → Log Reports → macron.log
             """)
         default: throw MacronError("Unknown command. Run macron help.")
         }

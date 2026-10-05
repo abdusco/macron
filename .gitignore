@@ -1,4 +1,5 @@
 .build/
 .DS_Store
-macron-arm64
-macron-x86_64
+/macron
+/macron-arm64
+/macron-x86_64

@@ -50,10 +50,13 @@ macron version
 macron uninstall        # Keep config and run results
 ```
 
-In Console, start streaming and filter by subsystem `local.macron`. Logs include stdout/stderr, run IDs, duration, and exit status. Command output is public text; retention is managed by macOS.
+In Console, choose **Log Reports → macron.log** for run history (`~/Library/Logs/macron.log`). Logs include stdout/stderr, run IDs, duration, and exit status.
+
+For live unified logs, select your Mac under **Devices**, click **Start (▶)**, and filter by subsystem `dev.abdus.apps.macron`. Trigger a run after starting the stream. Command output is public text.
 
 ```sh
-log stream --style compact --predicate 'subsystem == "local.macron"'
+log stream --style compact --predicate 'subsystem == "dev.abdus.apps.macron"'
+log show --last 1h --style compact --predicate 'subsystem == "dev.abdus.apps.macron"'
 ```
 
 ## Development
