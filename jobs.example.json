@@ -1,0 +1,20 @@
+{
+  "jobs": [
+    {
+      "name": "morning",
+      "schedule": "0 9 * * *",
+      "command": "date",
+      "enabled": true
+    },
+    {
+      "name": "backup",
+      "schedule": "0 18 * * 1-5",
+      "command": "/absolute/path/to/backup.sh",
+      "directory": "/absolute/path/to/project",
+      "environment": {
+        "BACKUP_DESTINATION": "/Volumes/Backup"
+      },
+      "enabled": false
+    }
+  ]
+}
